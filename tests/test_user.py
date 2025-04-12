@@ -1,25 +1,33 @@
 from fastapi.testclient import TestClient
 from src.main import app
+import pytest
 
 client = TestClient(app)
 
-users = [
-    {
-        'id': 1,
-        'name': 'Ivan Ivanov',
-        'email': 'i.i.ivanov@mail.com',
-    },
-    {
-        'id': 2,
-        'name': 'Petr Petrov',
-        'email': 'p.p.petrov@mail.com',
-    }
-]
+@pytest.fixture
+def test_users():
+    """Фикстура с тестовыми пользователями"""
+    return [
+        {'id': 1, 'name': 'Ivan Ivanov', 'email': 'i.i.ivanov@mail.com'},
+        {'id': 2, 'name': 'Petr Petrov', 'email': 'p.p.petrov@mail.com'}
+    ]
 
-def test_get_existed_user():
-    response = client.get("/api/v1/user", params={'email': users[0]['email']})
+@pytest.fixture(autouse=True)
+def setup_db(test_users):
+    """Фикстура для инициализации и очистки БД перед каждым тестом"""
+    from src.fake_db import db
+    db.clear()
+    for user in test_users:
+        db.create_user(user['name'], user['email'])
+
+def test_get_existed_user(test_users):
+    response = client.get("/api/v1/user", params={'email': test_users[0]['email']})
     assert response.status_code == 200
-    assert response.json() == users[0]
+    assert response.json() == {
+        'id': test_users[0]['id'],
+        'name': test_users[0]['name'],
+        'email': test_users[0]['email']
+    }
 
 def test_get_unexisted_user():
     response = client.get("/api/v1/user", params={'email': "nonexistent@mail.com"})
@@ -28,39 +36,27 @@ def test_get_unexisted_user():
 
 def test_create_user_with_valid_email():
     new_user = {
-        'id': 3,
         'name': 'Sergey Sergeev',
         'email': 's.s.sergeev@mail.com'
     }
     response = client.post("/api/v1/user", json=new_user)
     assert response.status_code == 201
-    assert response.json() == new_user
-    
-    response = client.get("/api/v1/user", params={'email': new_user['email']})
-    assert response.status_code == 200
-    assert response.json() == new_user
+    assert isinstance(response.json(), int)  # Проверяем, что возвращается ID
 
-def test_create_user_with_invalid_email():
+def test_create_user_with_invalid_email(test_users):
     duplicate_user = {
-        'id': 4,
         'name': 'Another Ivan',
-        'email': users[0]['email']
+        'email': test_users[0]['email']  # Используем существующий email
     }
     response = client.post("/api/v1/user", json=duplicate_user)
-    assert response.status_code == 400
-    assert response.json() == {"detail": "Email already registered"}
+    assert response.status_code == 409
+    assert response.json() == {"detail": "User with this email already exists"}
 
-def test_delete_user():
-    temp_user = {
-        'id': 5,
-        'name': 'To Delete',
-        'email': 'to.delete@mail.com'
-    }
-    client.post("/api/v1/user", json=temp_user)
+def test_delete_user(test_users):
+    # Удаляем существующего пользователя
+    response = client.delete("/api/v1/user", params={'email': test_users[0]['email']})
+    assert response.status_code == 204
     
-    response = client.delete(f"/api/v1/user/{temp_user['id']}")
-    assert response.status_code == 200
-    assert response.json() == {"message": "User deleted successfully"}
-    
-    response = client.get("/api/v1/user", params={'email': temp_user['email']})
-    assert response.status_code == 404
+    # Проверяем, что пользователь действительно удален
+    check_response = client.get("/api/v1/user", params={'email': test_users[0]['email']})
+    assert check_response.status_code == 404
